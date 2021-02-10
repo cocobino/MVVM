@@ -5,26 +5,82 @@ const type = (target, type) => {
     return target;
 };
 
+const ViewModelListener = class {
+    viewmodelUpdate(updated) {throw 'override';}
+};
 
-const ViewModel = class {
+const ViewModelValue = class {
+    subKey; cat; k; v;
+    constructor(subKey, cat, k, v) {
+        this.subKey = subKey;
+        this.cat=cat;
+        this.k = k;
+        this.v = v;
+        Object.freeze(this);
+    }
+};
+
+const ViewModel = class extends ViewModelListener{
     static get(data) {
         return new ViewModel(data);
     }
 
-    styles ={}; attributes ={}; properties ={}; events ={};
-    constructor(data) {
-        // if(checker != ViewModel.private) throw 'use ViewModel.get()'; //외부에서 생성 불가능
+    addListener(v, _=type(v, ViewModelListener)) {
+        this.listeners.add(v);
+    }
 
-        Object.entries(data).forEach(([k, v]) => {
-            switch(k) {
-                case 'styles': this.styles = v; break;
-                case 'attributes': this.attributes = v; break;
-                case 'properties': this.properties = v; break;
-                case 'events': this.events = v; break;
-                default: this[k] = v;
+    removeListener(v, _=type(v, ViewModelListener)) {
+        this.listeners.delete(v);
+    }
+
+    notify() {
+        this.listeners.forEach(v => v.viewmodelUpdated(this.isUpdated));
+    }
+
+    styles ={}; attributes ={}; properties ={}; events ={};
+    isUpdated = new Set; listeners = new Set;
+    subKey = ''; parent = null;
+
+    constructor(data) {
+        Object.entries(data).forEach(([k, obj]) => {
+            if('styles,attributes,properties'.includes(k)) {
+                this[k] = Object.defineProperties(obj, 
+                    Object.entries(obj).reduce((r, [k, v]) => {
+                        r[k] = {
+                            enumerable: true,
+                            get:_=>v,
+                            set:newV=>{
+                                v = newV;
+                                // v값을 기억해야함, 어떤 k,v 인지 알아야함
+                                vm.isUpdated.add(new ViewModelValue(cat, k, v));
+                            }
+                        };
+                        return r;
+                    }, {}));
+            } else {
+                    Object.definePropertiy(this, k, {
+                            enumerable: true,
+                            get:_=>v,
+                            set:newV=>{
+                                v = newV;
+                                // v값을 기억해야함, 어떤 k,v 인지 알아야함
+                                vm.isUpdated.add(new ViewModelValue(this.subKey, "", k, v));
+                            }
+                        });
+                        // ViewModel 이들어오면 다시 isupdate 에 넣어줘야함
+                        if(v instanceof ViewModel) {
+                            v.parent = this;
+                            v.subKey = k;
+                            v.addListener(this);
+                        }
+                    }
+                });
+                ViewModel.notify(this);
+                Object.seal(this);
             }
-        });
-        Object.seal(this);
+
+    viewmodelUpdated(updated) {
+        updated.forEach(v => this.isUpdated.add(v));
     }
 };
 
@@ -56,12 +112,30 @@ new (class extends Processor {
 })('styles')
 */
 
-const Binder = class {
+const Binder = class extends ViewModelListener{
     items = new Set; //객체지향 -> 메모리의 주소 객체의 메모리할당을 위해 Set으로 넣어야함
     processors = {};
     add(v, _ = type(v, BinderItem)) { this.items.add(v); }
     addProcessor(v, _0=type(v, Processor)) {
         this.processors[v.cat] = v;
+    }
+
+    watch(viewmodel, _ = type(viewmodel, ViewModel)) {
+        viewmodel.addListener(this);
+        this.render(viewmodel);
+    }
+    unwatch(viewmodel, _=type(viewmodel, ViewModel)) {
+        viewmodel.removeListener(this);
+    }
+
+    viewmodelUpdated(updated) {
+        const items = {};
+        this.items.forEach(item => {
+            items[item.viewmodel] = [
+                type(viewmodel[item.viewmodel]. ViewModel),
+                item.el
+            ];
+        });
     }
 
     render(viewmodel, _ = type(viewmodel, ViewModel)) {
@@ -78,6 +152,8 @@ const Binder = class {
             });
         });
     }
+
+    
 };
 
 const Scanner = class {
@@ -99,3 +175,57 @@ const Scanner = class {
         if(vm) binder.add(new BinderItem(el, vm));
     }
 };
+
+const scanner = new Scanner;
+const binder = scanner.scan(document.querySelector("#target"));
+binder.addProcessor(new (class extends Processor{
+    _process(vm, el, k, v){el.style[k] = v;}
+})("styles"));
+binder.addProcessor(new (class extends Processor{
+    _process(vm, el, k, v){el.setAttribute(k, v);}
+})("attributes"));
+binder.addProcessor(new (class extends Processor{
+    _process(vm, el, k, v){el[k] = v;}
+})("properties"));
+binder.addProcessor(new (class extends Processor{
+    _process(vm, el, k, v){
+        console.log("event", k, v, el)
+        el["on" + k] =e=>v.call(el, e, vm);
+    }
+})("events"));
+const viewmodel = ViewModel.get({
+    isStop:false,
+    changeContents(){
+        this.wrapper.styles.background = `rgb(${parseInt(Math.random()*150) + 100},${parseInt(Math.random()*150) + 100},${parseInt(Math.random()*150) + 100})`;
+        this.contents.properties.innerHTML = Math.random().toString(16).replace(".", "");
+    },
+    wrapper:ViewModel.get({
+        styles:{
+            width:"50%",
+            background:"#ffa",
+            cursor:"pointer"
+        },
+        events:{
+            click(e, vm){
+                vm.parent.isStop = true;
+                console.log("click", vm)
+            }
+        }
+    }),
+    title:ViewModel.get({
+        properties:{
+            innerHTML:"Title"
+        }
+    }),
+    contents:ViewModel.get({
+        properties:{
+            innerHTML:"Contents"
+        }
+    })
+});
+binder.watch(viewmodel);
+const f =_=>{
+    viewmodel.changeContents();
+  if(!viewmodel.isStop) requestAnimationFrame(f);
+};
+requestAnimationFrame(f);
